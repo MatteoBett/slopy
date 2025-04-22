@@ -9,6 +9,7 @@ import seaborn as sns
 import numpy as np
 import networkx as nx
 import matplotlib.colors as mcolors
+import pandas as pd
 
 import slopy.loader as loader
 
@@ -155,20 +156,94 @@ def get_length_distribution(batches : Dict[int, List[loader.SeqSlope]], pdf : bp
     fig.savefig(pdf, format='pdf')
     plt.close(fig)
 
-def make_heatmap(pdf : bpdf.PdfPages, distmat : np.matrix, size : int, k:int):
+def make_heatmap(pdf : bpdf.PdfPages, mat : np.matrix, size : int, k:int):
     fig, ax = plt.subplots(1, 1, figsize = (10,8))
-    sns.heatmap(data=distmat, cmap="magma", cbar=True, ax=ax)
+    sns.heatmap(data=mat, cmap="magma", cbar=True, ax=ax)
     
-    ax.set_title(f"Jaccard distance matrix between sequences of size {size} and k = {k}")
+    ax.set_title(f"Adjacency and degree matrix between sequences of size {size} and k = {k}")
     fig.savefig(pdf, format='pdf')
     plt.close(fig)
 
+
+"""
+    sns.barplot(data=df, x="len_size", y="tot_degrees", ax=axes[0], legend=True, color='red')
+    #sns.histplot(data=df, x="len_size",  kde=True, bins=50, ax=axes[0], element="step", stat="density", legend=True, color="blue")
+    sns.barplot(data=df, x="len_size", y="out_degrees", ax=axes[1], legend=True, color='red')
+    #sns.histplot(data=df, x="len_size",  kde=True, bins=50, ax=axes[1], element="step", stat="density", legend=True, color="blue")    
+    sns.barplot(data=df, x="len_size", y="in_degrees", ax=axes[2], legend=True, color='red')
+    #sns.histplot(data=df, x="len_size",  kde=True, bins=50, ax=axes[2], element="step", stat="density", legend=True, color="blue")   
+"""
+
+def degree_v_size(batches: Dict[int, List[loader.SeqSlope]], size_fam: int, pdf: bpdf.PdfPages):
+    in_deg = np.zeros(shape=(size_fam,))
+    out_deg = np.zeros(shape=(size_fam,))
+    tot_deg = np.zeros(shape=(size_fam,))
+    size = np.zeros(shape=(size_fam,))
+
+    for i, (length, batch) in enumerate(batches.items()):
+        for seq in batch:
+            deg = 0
+            o_deg = 0
+            i_deg = 0
+            for targ in seq.targets.values():
+                deg += len(targ)
+                o_deg += len(targ)
+            for ancs in seq.ancestor.values():
+                deg += len(ancs)
+                i_deg += len(ancs)
+
+            in_deg[seq._id] = i_deg
+            out_deg[seq._id] = o_deg
+            tot_deg[seq._id] = deg
+            size[seq._id] = length
+
+    df = pd.DataFrame({
+        "len_size": size,
+        "in_degrees": in_deg,
+        "out_degrees": out_deg,
+        "tot_degrees": tot_deg,
+    })
+
+    df["in_degrees"] /= df["in_degrees"].sum()
+    df["out_degrees"] /= df["out_degrees"].sum()
+    df["tot_degrees"] /= df["tot_degrees"].sum()
+
+    grouped = df.groupby("len_size").mean(numeric_only=True).reset_index()
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 7), sharex=True, sharey=True)
+
+    sns.lineplot(data=grouped, x="len_size", y="tot_degrees", ax=axes[0], legend=True, color='red')
+    sns.histplot(data=df, x="len_size", kde=True, bins=50, ax=axes[0], element="step", stat="density", legend=True, color="blue")
+
+    sns.lineplot(data=grouped, x="len_size", y="out_degrees", ax=axes[1], legend=True, color='red')
+    sns.histplot(data=df, x="len_size", kde=True, bins=50, ax=axes[1], element="step", stat="density", legend=True, color="blue")
+
+    sns.lineplot(data=grouped, x="len_size", y="in_degrees", ax=axes[2], legend=True, color='red')
+    sns.histplot(data=df, x="len_size", kde=True, bins=50, ax=axes[2], element="step", stat="density", legend=True, color="blue")
+
+    axes[0].set_title("Sequences' all nodes degree depending on their size")
+    axes[1].set_title("Sequences' target nodes degree depending on their size")
+    axes[2].set_title("Sequences' ancestor nodes degree depending on their size")
+
+    legend_handles = [
+        mpatches.Patch(color=sns.color_palette("tab10")[0], label="Seq Size distribution"),
+        mpatches.Patch(color='red', label="Avg normalized degree")
+    ]
+    fig.legend(handles=legend_handles, loc=[0.35, 0.95], ncol=3, fontsize='large')
+
+    axes[0].set_xlabel("Sequence length (nuc)")
+    axes[0].set_ylabel("Density")
+    axes[0].set_xticks(np.arange(start=size.min(), stop=size.max(), step=10))
+    fig.savefig(pdf, format='pdf')
+    plt.close(fig)
+
+    
 
 def show_inter_dist(batches : Dict[int, List[loader.SeqSlope]], pdf : bpdf.PdfPages, k : int):
     mat = np.zeros((len(batches.keys()), len(batches.keys())))
 
     for i, (_, batch) in enumerate(batches.items()):
-        tmp = np.array([np.mean(list(seq.targets.values())) for seq in batch]).mean(axis=0)
+        tmp = np.array([np.mean(list(seq.targets_sim.values())) for seq in batch]).mean(axis=0)
         mat[i, i+1:] = tmp
 
     fig, ax = plt.subplots(1, 1, figsize = (14,8))
@@ -178,6 +253,30 @@ def show_inter_dist(batches : Dict[int, List[loader.SeqSlope]], pdf : bpdf.PdfPa
     fig.savefig(pdf, format='pdf')
     plt.close(fig)
 
+
+def spectral_clustering(Laplacian : np.matrix, batches:Dict[int, List[loader.SeqSlope]], pdf : bpdf.PdfPages):
+    sizes = np.zeros((len(Laplacian,)))
+    degrees = np.zeros((len(Laplacian,)))
+    _, eigenvectors = np.linalg.eigh(Laplacian)
+
+    for size, batch in batches.items():
+        for elt in batch:
+            sizes[elt._id] = size
+            degrees[elt._id] = len(elt.ancestor) + len(elt.targets)
+
+    fig = plt.figure(figsize=(12,10))
+    ax = fig.add_subplot(projection='3d')
+    sc = ax.scatter(eigenvectors[:, 1], eigenvectors[:, 2], eigenvectors[:,3], c=sizes, cmap='magma')  # Optional: set colormap
+    plt.colorbar(sc, ax=ax)
+
+    fig = plt.figure(figsize=(12,10))
+    ax1 = fig.add_subplot(projection='3d')
+    sc1 = ax1.scatter(eigenvectors[:, 1], eigenvectors[:, 2], eigenvectors[:,3], c=degrees, cmap='magma')  # Optional: set colormap
+    plt.colorbar(sc1, ax=ax1)
+
+    #plt.show()
+    pdf.savefig(fig)
+    plt.close(fig)
 
 def main_display(path_report : str, batches : Dict[int, loader.SeqSlope]) -> bpdf.PdfPages:
     pdf = bpdf.PdfPages(path_report)

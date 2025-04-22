@@ -11,12 +11,15 @@ import slopy.struct as struct
 @dataclass
 class SeqSlope:
     header : str
+    _id : int
     seq : str
     secondary_structure : str
     encoded : List[int] | List[str]
     ss_encoded : List[int] | List[str]
-    cluster_seq : list
+    cluster_seq : Dict[int, List[int]]
+    ancestor: Dict[int, List[int]]
     targets : Dict[int, List[int]]
+    targets_sim : Dict[int, float]
 
 def get_k(seq : str, ss : str):
     L1_ss = RNA.abstract_shapes(ss, 1)
@@ -45,12 +48,15 @@ def stream_batches(family_dir : str) -> Generator[str, Dict[int, List[SeqSlope]]
                 k.append(get_k(seq=seq, ss=ss))
                 batches[size] = [SeqSlope(
                     header=record.description,
+                    _id=index,
                     seq=seq,
                     secondary_structure=ss,
                     encoded=[],
                     ss_encoded=[],
                     cluster_seq=[],
-                    targets={}
+                    ancestor={},
+                    targets={},
+                    targets_sim={}
                 )]
             else:
                 seq = re.sub("-", "", seq)
@@ -58,11 +64,14 @@ def stream_batches(family_dir : str) -> Generator[str, Dict[int, List[SeqSlope]]
                 k.append(get_k(seq=seq, ss=ss))
                 batches[size].append(SeqSlope(
                     header=record.description,
+                    _id=index,
                     seq=seq,
                     secondary_structure=ss,
                     encoded=[],
                     ss_encoded=[],
                     cluster_seq=[],
-                    targets={}
+                    ancestor={},
+                    targets={},
+                    targets_sim={}
                 ))
-        yield family_name, batches, min(k)
+        yield family_name, batches, min(k), len(k)
