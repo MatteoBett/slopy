@@ -4,7 +4,7 @@ from typing import List, Generator, Any, Dict
 
 from Bio import SeqIO
 import RNA
-import numpy as np
+import torch
 
 import slopy.struct as struct
 
@@ -13,13 +13,18 @@ class SeqSlope:
     header : str
     _id : int
     seq : str
+    oh_seq : torch.Tensor
     secondary_structure : str
     encoded : List[int] | List[str]
     ss_encoded : List[int] | List[str]
-    cluster_seq : Dict[int, List[int]]
+    cluster_seq : List[int]
     ancestor: Dict[int, List[int]]
     targets : Dict[int, List[int]]
     targets_sim : Dict[int, float]
+    node:str
+    path: List[str]
+    lenpath : int
+
 
 def get_k(seq : str, ss : str):
     L1_ss = RNA.abstract_shapes(ss, 1)
@@ -39,7 +44,11 @@ def stream_batches(family_dir : str) -> Generator[str, Dict[int, List[SeqSlope]]
     for family_name, infile_path in family_stream(family_dir=family_dir):
         batches = {}
         k = []
-        for index, record in enumerate(SeqIO.parse(handle=infile_path, format="fasta-pearson")):
+        record_list = [record for record in SeqIO.parse(handle=infile_path, format="fasta-pearson")]
+        record_list.sort(key=lambda x:len(x.seq)-str(x.seq).count('-'), reverse=True)
+
+        for index, record in enumerate(record_list):
+            
             seq = str(record.seq)
             size = len(seq) - seq.count('-')
             if size not in batches.keys():
@@ -56,7 +65,11 @@ def stream_batches(family_dir : str) -> Generator[str, Dict[int, List[SeqSlope]]
                     cluster_seq=[],
                     ancestor={},
                     targets={},
-                    targets_sim={}
+                    targets_sim={},
+                    node=f'{size}_{index}',
+                    path=[],
+                    lenpath=0,
+                    oh_seq=torch.tensor([])
                 )]
             else:
                 seq = re.sub("-", "", seq)
@@ -72,6 +85,10 @@ def stream_batches(family_dir : str) -> Generator[str, Dict[int, List[SeqSlope]]
                     cluster_seq=[],
                     ancestor={},
                     targets={},
-                    targets_sim={}
+                    targets_sim={},
+                    node=f"{size}_{index}",
+                    path=[],
+                    lenpath=0,
+                    oh_seq=torch.tensor([])
                 ))
         yield family_name, batches, min(k), len(k)

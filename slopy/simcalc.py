@@ -2,6 +2,7 @@ import sys
 from typing import Dict, List
 
 import numpy as np
+from collections import defaultdict, deque
 
 import slopy.loader as loader
 import slopy.utils as utils
@@ -58,13 +59,19 @@ def stream_batches_similarity(batches : Dict[int, List[loader.SeqSlope]]):
                                                     B_ss=batch[j].ss_encoded)
         yield size, distmat
 
-def fill_clusters(distmat : np.matrix, batch : List[loader.SeqSlope], threshold : float = 0.3):
+def fill_clusters(distmat : np.matrix, batch : List[loader.SeqSlope], threshold : float = 0.1):
     nrows, _ = distmat.shape
     for row in range(nrows):
         sim = np.argwhere((distmat[row,:] > threshold)).squeeze().tolist()
-        batch[row].cluster_seq += sim if isinstance(sim, list) else [sim]
+        if not isinstance(sim, list):
+            sim = [sim]
+        
+        for i in sim:
+            batch[row].cluster_seq.append(batch[i].node)
+            batch[i].cluster_seq.append(batch[row].node)
+            
 
-def stream_batches_smaller(batches : Dict[int, List[loader.SeqSlope]], size_fam : int, threshold : int = 0.3, rep_thr : float = 0.01):
+def stream_batches_smaller(batches : Dict[int, List[loader.SeqSlope]], size_fam : int, threshold : int = 0.2, rep_thr : float = 0.01):
     A = np.zeros((size_fam, size_fam))
     keys = list(batches.keys())
     for index, (size, batch) in enumerate(batches.items()):
@@ -74,10 +81,18 @@ def stream_batches_smaller(batches : Dict[int, List[loader.SeqSlope]], size_fam 
                 for i in range(0, len(batch)):
                     for j in range(0, len(batches[key])):
                         if key not in batches[size][i].targets.keys():
-                            batches[size][i].targets[key] = [j]
+                            batches[size][i].targets[key] = [batches[key][j].node]
+                            if size not in batches[size][i].targets.keys():
+                                batches[key][j].ancestor[size] = [batch[i].node]
+                            else:
+                                batches[key][j].ancestor[size].append(batch[i].node)
                         else:
-                            batches[size][i].targets[key].append(j)
-                        
+                            batches[size][i].targets[key].append(batches[key][j].node)
+                            if size not in batches[size][i].targets.keys():
+                                batches[key][j].ancestor[size] = [batch[i].node]
+                            else:
+                                batches[key][j].ancestor[size].append(batch[i].node) 
+                    
             else:
                 for i in range(0, len(batch)):
                     tmp = []
@@ -86,25 +101,28 @@ def stream_batches_smaller(batches : Dict[int, List[loader.SeqSlope]], size_fam 
                                                     lstB=batches[key][j].encoded,
                                                     A_ss=batch[i].ss_encoded,
                                                     B_ss=batches[key][j].ss_encoded)
+
+                        A[batch[i]._id, batches[key][j]._id] = np.exp(dist_ij) + len(batch[i].seq)*0.01
+                        A[batches[key][j]._id, batch[i]._id] = np.exp(dist_ij) + len(batches[key][j].seq)*0.01
                         tmp.append(dist_ij)
-                        A[batch[i]._id, batches[key][j]._id] = np.exp(-dist_ij) + len(batch[i].seq)*0.01
-                        A[batches[key][j]._id, batch[i]._id] = np.exp(-dist_ij) + len(batches[key][j].seq)*0.01
                         if dist_ij > threshold:
                             
                             if key not in batches[size][i].targets.keys():
-                                batches[size][i].targets[key] = [j] + batches[key][j].cluster_seq
+                                batches[size][i].targets[key] = [batches[key][j].node] + batches[key][j].cluster_seq
                                 if size not in batches[size][i].targets.keys():
-                                    batches[key][j].ancestor[size] = [i]
+                                    batches[key][j].ancestor[size] = [batch[i].node]
                                 else:
-                                    batches[key][j].ancestor[size].append(i)
+                                    batches[key][j].ancestor[size].append(batch[i].node)
                             else:
-                                batches[size][i].targets[key].append(j)
+                                batches[size][i].targets[key].append(batches[key][j].node) 
+                                batches[size][i].targets[key] += batches[key][j].cluster_seq
                                 if size not in batches[size][i].targets.keys():
-                                    batches[key][j].ancestor[size] = [i]
+                                    batches[key][j].ancestor[size] = [batch[i].node]
                                 else:
-                                    batches[key][j].ancestor[size].append(i)
+                                    batches[key][j].ancestor[size].append(batch[i].node)
 
                     batches[size][i].targets_sim[key] = np.mean(tmp)
+            
 
     D = A.sum(axis=0)
     L = np.identity(size_fam)-D**(-1/2)*A*D**(1/2)
@@ -123,13 +141,18 @@ def make_laplacian(batches : Dict[int, List[loader.SeqSlope]], Laplacian : np.ma
     return Laplacian
 
 
-def reformat(batches : Dict[int, List[loader.SeqSlope]]) -> Dict[str, loader.SeqSlope]:
+def reformat(batches : Dict[int, List[loader.SeqSlope]]):
     nw = {}
     for key_size, batch in batches.items():
         for idx, seq in enumerate(batch):
-            nw[f"{key_size}_{idx}_{seq._id}"] = seq
+            for nxt_size, target in seq.targets.items():
+                seq.targets[nxt_size] = sorted(list(set(target)))
+            for prev_size, ancestry in seq.ancestor.items():
+                seq.ancestor[prev_size] = sorted(list(set(ancestry)))
+            
+            nw[f"{key_size}_{seq._id}"] = seq
 
-    return nw
+    return batches, nw
 
 def get_seqpaths(batches : Dict[int, List[loader.SeqSlope]], target_list:List[int], next_size : int, path : list = []):
     if len(target_list) == 0:
@@ -149,3 +172,13 @@ def get_seqpaths(batches : Dict[int, List[loader.SeqSlope]], target_list:List[in
 
 def stream_seq(batches : Dict[int, List[loader.SeqSlope]], size_fam : int):
     Seqpath = {}
+
+def avg_path_len(G : Dict[str, loader.SeqSlope]):
+    degrees = np.zeros((len(G,)))
+
+    for key, seq in G.items():
+        degrees[seq._id] = len(seq.ancestor) + len(seq.targets)
+
+    topo = []
+    queue = deque([key for key in G if len(G[key].targets) == 0])
+    pass

@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import matplotlib.pyplot as plt
 import matplotlib.backends.backend_pdf as bpdf
@@ -18,7 +18,8 @@ sns.set_theme()
 def normalize_node(name: str) -> str:
     return name.strip()
 
-def show_graph(batches: Dict[int, List]):
+
+def show_graph(batches: Dict[int, List[loader.SeqSlope]]):
     G = nx.DiGraph()
     pos = {}
     node_to_clusters = {}
@@ -32,17 +33,15 @@ def show_graph(batches: Dict[int, List]):
     all_clusters = []
     size_cluster_map = defaultdict(list)  # map size -> list of (cluster_id, nodes)
 
-    for size, listseq in batches.items():
+    for size, seqs in batches.items():
         seen_clusters = set()
-        for i, seq in enumerate(listseq):
-            if seq.cluster_seq:
-                cluster = tuple(sorted(set(seq.cluster_seq + [i])))
-                if cluster not in seen_clusters:
-                    cluster_nodes = [f"{size}_{idx}" for idx in cluster]
-                    all_clusters.append((cluster_id, cluster_nodes))
-                    size_cluster_map[size].append((cluster_id, cluster_nodes))
-                    seen_clusters.add(cluster)
-                    cluster_id += 1
+        for i, seq in enumerate(seqs):
+            cluster = tuple(sorted(set([seq.node] + seq.cluster_seq)))
+            if (cluster not in seen_clusters):
+                all_clusters.append((cluster_id, list(cluster)))
+                size_cluster_map[size].append((cluster_id, list(cluster)))
+                seen_clusters.add(cluster)
+                cluster_id += 1
 
     # Step 2: Assign colors to clusters
     available_colors = list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.CSS4_COLORS.values())
@@ -66,7 +65,7 @@ def show_graph(batches: Dict[int, List]):
         num_rows = 0
         for cid, nodes in size_cluster_map[size]:
             num_rows += len(nodes) + 1  # +1 for spacing between clusters
-        num_rows += sum(1 for i in range(len(listseq)) if f"{size}_{i}" not in node_to_clusters)
+        num_rows += sum(1 for seq in listseq if normalize_node(seq.node) not in node_to_clusters)
         total_height = num_rows * y_spacing
         y_cursor = total_height / 2
 
@@ -82,8 +81,8 @@ def show_graph(batches: Dict[int, List]):
             y_cursor -= y_spacing  # extra space between clusters
 
         # Then place unclustered sequences
-        for i, seq in enumerate(listseq):
-            n = f"{size}_{i}"
+        for seq in listseq:
+            n = normalize_node(seq.node)
             if n in placed:
                 continue
             G.add_node(n)
@@ -92,15 +91,15 @@ def show_graph(batches: Dict[int, List]):
             node_cluster_sets[n] = node_to_clusters.get(n, set())
 
         # Add edges
-        for row_index, seq in enumerate(listseq):
-            source = normalize_node(f"{size}_{row_index}")
+        for seq in listseq:
+            source = normalize_node(seq.node)
             for key, ilist in seq.targets.items():
-                for elt in ilist:
-                    target = normalize_node(f"{key}_{elt}")
+                for ti, elt in enumerate(ilist):
+                    target = normalize_node(f"{elt}")
                     G.add_node(target)
                     if target not in pos:
                         tx = x + x_spacing * 2
-                        ty = -elt * y_spacing
+                        ty = -ti * y_spacing
                         pos[target] = (tx, ty)
                     G.add_edge(source, target)
 
@@ -237,7 +236,64 @@ def degree_v_size(batches: Dict[int, List[loader.SeqSlope]], size_fam: int, pdf:
     fig.savefig(pdf, format='pdf')
     plt.close(fig)
 
+def plot_size_v_lenpath(batches : Dict[str, loader.SeqSlope], pdf : bpdf.PdfPages):
+    lenpaths = [seq.lenpath for _, seq in batches.items()]
+    sizes = [len(seq.seq) for _, seq in batches.items()]
+    count_sizes = Counter(sizes)
     
+    tmp = {size : [] for size in set(sizes)}
+    for node, seq in batches.items():
+        tmp[len(seq.seq)].append(seq.lenpath)
+
+    avg_len = {k:np.mean(v) for k, v in tmp.items()}
+
+    fig, ax = plt.subplots(1, 1, figsize=(18,5))
+
+    ax2 = ax.twinx()
+    ax2.bar(list(count_sizes.keys()), list(count_sizes.values()), zorder=1)
+    ax2.set_ylabel("Sequences count")
+    ax.scatter(sizes, lenpaths, c='r', zorder=2)
+    ax.plot(list(avg_len.keys()), list(avg_len.values()), c='black', marker='.', zorder=2)
+
+    ax.set_xlabel("Sequence size (bp)")
+    ax.set_ylabel("Path lengths (per seq)")
+    ax.set_title("Path length depending on size")
+    
+    fig.savefig(pdf, format='pdf')
+    plt.close(fig)   
+
+
+def slope_length(batches : Dict[str, loader.SeqSlope], pdf : bpdf.PdfPages):
+    diffsize, lengths, std = [], [], []
+
+    for _, seq in batches.items():
+        if len(seq.path) > 0:
+            diffsize.append((int(seq.path[0].split("_")[0])-int(seq.path[-1].split("_")[0]))/int(seq.path[0].split("_")[0]))
+            lengths.append(len(seq.seq))
+            std.append(np.std([int(i.split("_")[0]) for i in seq.path]))
+    
+    sizes = pd.DataFrame({"sizes":diffsize, "lengths":lengths, "std":std})
+        
+    fig, axes = plt.subplots(1, 3, figsize=(18,5))
+
+    sns.histplot(data=sizes, x="sizes", ax=axes[0])
+    axes[0].set_title(f"Density of size reduction through the slope")
+    axes[0].set_xlabel("% of sequence size reduction")
+
+    sns.lineplot(data=sizes, x="lengths", y="sizes", ax=axes[1])
+    axes[1].set_title(f"% reduction of sequences depending on starting sequence's size")
+    axes[1].set_xlabel("Starting sequence's size")
+    axes[1].set_ylabel("% of sequence size reduction")
+
+    sns.lineplot(data=sizes, x="lengths", y="std", ax=axes[2])
+    axes[2].set_title(f"standard stepwise sequence's reduction depending on starting sequence's size")
+    axes[2].set_xlabel("Starting sequence's size")
+    axes[2].set_ylabel("standard sequence size reduction")
+
+    fig.savefig(pdf, format='pdf')
+    plt.close(fig)
+
+
 
 def show_inter_dist(batches : Dict[int, List[loader.SeqSlope]], pdf : bpdf.PdfPages, k : int):
     mat = np.zeros((len(batches.keys()), len(batches.keys())))
@@ -268,15 +324,16 @@ def spectral_clustering(Laplacian : np.matrix, batches:Dict[int, List[loader.Seq
     ax = fig.add_subplot(projection='3d')
     sc = ax.scatter(eigenvectors[:, 1], eigenvectors[:, 2], eigenvectors[:,3], c=sizes, cmap='magma')  # Optional: set colormap
     plt.colorbar(sc, ax=ax)
-
-    fig = plt.figure(figsize=(12,10))
-    ax1 = fig.add_subplot(projection='3d')
-    sc1 = ax1.scatter(eigenvectors[:, 1], eigenvectors[:, 2], eigenvectors[:,3], c=degrees, cmap='magma')  # Optional: set colormap
-    plt.colorbar(sc1, ax=ax1)
-
-    #plt.show()
     pdf.savefig(fig)
     plt.close(fig)
+    
+    fig1 = plt.figure(figsize=(12,10))
+    ax1 = fig1.add_subplot(projection='3d')
+    sc1 = ax1.scatter(eigenvectors[:, 1], eigenvectors[:, 2], eigenvectors[:,3], c=degrees, cmap='magma')  # Optional: set colormap
+    plt.colorbar(sc1, ax=ax1)
+    
+    pdf.savefig(fig1)
+    plt.close(fig1)
 
 def main_display(path_report : str, batches : Dict[int, loader.SeqSlope]) -> bpdf.PdfPages:
     pdf = bpdf.PdfPages(path_report)
